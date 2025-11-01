@@ -3766,32 +3766,48 @@ def format_config_display(memory_code, storage_code):
     return f"{mem_display} + {stor_display}"
 
 def match_config(user_memory, user_storage, ovh_memory, ovh_storage):
-    """匹配配置 - 使用和 check_server_availability 相同的逻辑
+    """匹配配置 - 统一使用 standardize_config 进行匹配
     
     Args:
-        user_memory: 用户选择的内存配置（如 ram-16g-24skstor01）
-        user_storage: 用户选择的存储配置（如 hybridsoftraid-4x4000sa-1x500nvme-24skstor）
-        ovh_memory: OVH返回的内存配置（如 ram-16g-ecc-2133）
-        ovh_storage: OVH返回的存储配置（如 hybridsoftraid-4x4000sa-1x500nvme）
+        user_memory: 用户选择的内存配置（如 64g-ecc-2400-24ska01）
+        user_storage: 用户选择的存储配置（如 2x450nvme-24ska01）
+        ovh_memory: OVH返回的内存配置（如 64g-noecc-2133）
+        ovh_storage: OVH返回的存储配置（如 2x450nvme）
     
     Returns:
         bool: 是否匹配
+    
+    注意：使用与 find_matching_api2_plans 和 addon 查找相同的标准化逻辑，
+          确保验证阶段、匹配阶段、下单阶段使用统一的匹配规则。
+          只比对核心容量参数，忽略规格细节（如频率、ECC类型等）。
     """
     memory_match = True
     if user_memory and ovh_memory:
-        # 提取前两段进行比较（如 ram-16g）
-        user_memory_parts = user_memory.split('-')[:2]
-        ovh_memory_parts = ovh_memory.split('-')[:2]
-        user_memory_key = '-'.join(user_memory_parts)
-        ovh_memory_key = '-'.join(ovh_memory_parts)
-        memory_match = (user_memory_key == ovh_memory_key)
+        # 使用 standardize_config 标准化后比对
+        user_memory_std = standardize_config(user_memory)
+        ovh_memory_std = standardize_config(ovh_memory)
+        memory_match = (user_memory_std == ovh_memory_std)
+        
+        # 调试日志
+        if user_memory_std != ovh_memory_std:
+            add_log("DEBUG", f"内存不匹配: user={user_memory}→{user_memory_std}, ovh={ovh_memory}→{ovh_memory_std}", "config_sniper")
     
     storage_match = True
     if user_storage and ovh_storage:
-        # 前缀匹配
-        storage_match = user_storage.startswith(ovh_storage)
+        # 使用 standardize_config 标准化后比对
+        user_storage_std = standardize_config(user_storage)
+        ovh_storage_std = standardize_config(ovh_storage)
+        storage_match = (user_storage_std == ovh_storage_std)
+        
+        # 调试日志
+        if user_storage_std != ovh_storage_std:
+            add_log("DEBUG", f"存储不匹配: user={user_storage}→{user_storage_std}, ovh={ovh_storage}→{ovh_storage_std}", "config_sniper")
     
-    return memory_match and storage_match
+    result = memory_match and storage_match
+    if result:
+        add_log("DEBUG", f"✅ 配置匹配成功: memory={standardize_config(user_memory)}, storage={standardize_config(user_storage)}", "config_sniper")
+    
+    return result
 
 # 配置绑定狙击监控线程
 def config_sniper_monitor_loop():
