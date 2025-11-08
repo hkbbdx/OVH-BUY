@@ -2443,7 +2443,7 @@ const ServersPage = () => {
                       return (
                         <div key={region} className="mb-3 last:mb-0">
                           <h3 className="text-xs font-semibold text-cyber-accent/80 mb-2 tracking-wider pl-1">{region}</h3>
-                          <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-7 gap-2">
+                          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 gap-2">
                             {regionDatacenters.map(dc => {
                               const dcCode = dc.code.toUpperCase();
                               const availStatus = availability[server.planCode]?.[dcCode.toLowerCase()] || "unknown";
@@ -2453,20 +2453,23 @@ const ServersPage = () => {
                                 <div
                                   key={dcCode}
                                   onClick={() => toggleDatacenterSelection(server.planCode, dcCode)}
-                                  className={`px-2 py-1.5 rounded cursor-pointer text-xs flex items-center justify-between transition-all ${
+                                  className={`px-2.5 py-1.5 rounded cursor-pointer text-xs flex items-center justify-between transition-all ${
                                     isSelected
                                       ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-accent'
                                       : 'bg-slate-800/60 border-slate-700 hover:bg-slate-700/60 text-slate-300 hover:border-slate-600'
                                   } border font-medium`}
                                   title={`${dc.name} (${dc.region})`}
                                 >
-                                  <span>{dcCode}</span>
+                                  <span className="font-semibold">{dcCode}</span>
                                   {availStatus !== "unknown" && (
-                                    <span className={`text-xs font-semibold ${
+                                    <span className={`text-xs font-semibold ml-1.5 ${
                                       availStatus === "unavailable" ? 'text-red-400' : 'text-green-400'
                                     }`}>
                                       {availStatus === "unavailable" ? '无' : '有'}
                                     </span>
+                                  )}
+                                  {availStatus === "unknown" && (
+                                    <span className="text-xs text-slate-500 ml-1.5">-</span>
                                   )}
                                 </div>
                               );
