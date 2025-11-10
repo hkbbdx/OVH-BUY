@@ -320,8 +320,8 @@ const MonitorPage = () => {
             disabled={isRefreshing}
             className="px-3 sm:px-4 py-1.5 sm:py-2 bg-cyber-accent/10 hover:bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/30 rounded-md transition-all flex items-center gap-2 text-xs sm:text-sm font-medium shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <RefreshCw size={isMobile ? 14 : 16} className={isRefreshing ? 'animate-spin' : ''} />
-            {isRefreshing ? '刷新中...' : '刷新'}
+            <RefreshCw size={isMobile ? 14 : 16} className={`flex-shrink-0 ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span className="min-w-[3.5rem]">{isRefreshing ? '刷新中...' : '刷新'}</span>
           </button>
         </div>
 

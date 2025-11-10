@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { motion } from "framer-motion";
+import { createPortal } from "react-dom";
+import { motion, AnimatePresence } from "framer-motion";
 import { useAPI } from "@/context/APIContext";
 import { api } from "@/utils/apiClient";
 import { toast } from "sonner";
@@ -298,8 +299,8 @@ const QueuePage = () => {
           className="cyber-button text-xs flex items-center justify-center"
           disabled={isLoading || isRefreshing}
         >
-          <RefreshCwIcon size={12} className={`mr-1 ${isRefreshing ? 'animate-spin' : ''}`} />
-          {isRefreshing ? '刷新中...' : '刷新'}
+          <RefreshCwIcon size={12} className={`mr-1 flex-shrink-0 ${isRefreshing ? 'animate-spin' : ''}`} />
+          <span className="min-w-[3.5rem]">{isRefreshing ? '刷新中...' : '刷新'}</span>
         </button>
         <button
           onClick={() => setShowClearConfirm(true)}
@@ -594,39 +595,50 @@ const QueuePage = () => {
       </div>
       
       {/* 确认清空对话框 */}
-      {showClearConfirm && (
-        <div 
-          className="fixed top-0 left-0 right-0 bottom-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[9999]" 
-          style={{ position: 'fixed', margin: 0 }}
-          onClick={() => setShowClearConfirm(false)}
-        >
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-cyber-surface-dark border border-cyber-border rounded-lg p-6 max-w-md mx-4 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="text-lg font-bold text-cyber-primary-accent mb-3">⚠️ 确认清空</h3>
-            <p className="text-cyber-text mb-6">
-              确定要清空所有队列任务吗？<br />
-              <span className="text-red-400 text-sm">此操作不可撤销。</span>
-            </p>
-            <div className="flex gap-3 justify-end">
-              <button
+      {createPortal(
+        <AnimatePresence>
+          {showClearConfirm && (
+            <>
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999]"
                 onClick={() => setShowClearConfirm(false)}
-                className="cyber-button px-4 py-2 bg-cyber-surface hover:bg-cyber-hover text-cyber-text"
-              >
-                取消
-              </button>
-              <button
-                onClick={clearAllQueue}
-                className="cyber-button px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 border-red-500/50"
-              >
-                确认清空
-              </button>
-            </div>
-          </motion.div>
-        </div>
+              />
+              <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 pointer-events-none">
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  className="bg-cyber-dark border-2 border-cyber-accent/50 rounded-lg p-6 max-w-md w-full shadow-neon-lg pointer-events-auto"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <h3 className="text-xl font-bold text-cyber-text mb-2">⚠️ 确认清空</h3>
+                  <p className="text-cyber-muted mb-6 whitespace-pre-line">
+                    确定要清空所有队列任务吗？{'\n'}
+                    <span className="text-red-400 text-sm">此操作不可撤销。</span>
+                  </p>
+                  <div className="flex gap-3 justify-end">
+                    <button
+                      onClick={() => setShowClearConfirm(false)}
+                      className="px-4 py-2 rounded border border-cyber-accent/30 text-cyber-muted hover:text-cyber-text hover:bg-cyber-grid/50 transition-all"
+                    >
+                      取消
+                    </button>
+                    <button
+                      onClick={clearAllQueue}
+                      className="px-4 py-2 rounded bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/50 hover:border-red-500/70 transition-all shadow-neon-sm hover:shadow-neon-md"
+                    >
+                      确认清空
+                    </button>
+                  </div>
+                </motion.div>
+              </div>
+            </>
+          )}
+        </AnimatePresence>,
+        document.body
       )}
     </div>
   );

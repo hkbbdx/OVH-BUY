@@ -2065,8 +2065,8 @@ const ServerControlPage: React.FC = () => {
             onClick={() => fetchServers(true)}
             disabled={isLoading || isRefreshing}
             className="px-3 sm:px-4 py-1.5 sm:py-2 bg-cyber-accent text-white rounded-lg hover:bg-cyber-accent/80 disabled:opacity-50 flex items-center gap-2 transition-all shadow-neon-sm text-xs sm:text-sm">
-            <RefreshCw className={`w-3 h-3 sm:w-4 sm:h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-            {isRefreshing ? '刷新中...' : '刷新'}
+            <RefreshCw className={`w-3 h-3 sm:w-4 sm:h-4 flex-shrink-0 ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span className="min-w-[3.5rem]">{isRefreshing ? '刷新中...' : '刷新'}</span>
           </button>
         </div>
 
