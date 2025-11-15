@@ -556,15 +556,7 @@ const QueuePage = () => {
 
       {/* Queue List */}
       <div>
-        {/* 只在首次加载时显示加载状态，刷新时保留列表 */}
-        {isLoading && queueItems.length === 0 ? (
-          <div className="cyber-card">
-            <div className="flex items-center justify-center py-12">
-              <RefreshCwIcon className="w-8 h-8 animate-spin text-cyber-accent" />
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-3">
+        <div className="space-y-3">
             {queueItems.map(item => (
               <div 
                 key={item.id}
@@ -624,8 +616,7 @@ const QueuePage = () => {
                 </div>
               </div>
             ))}
-          </div>
-        )}
+        </div>
       </div>
       
       {/* 确认清空对话框 */}
