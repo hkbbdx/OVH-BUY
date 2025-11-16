@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useAPI } from "@/context/APIContext";
 import { api } from "@/utils/apiClient";
 import { toast } from "sonner";
-import { XIcon, RefreshCwIcon, PlusIcon, SearchIcon, PlayIcon, PauseIcon, Trash2Icon, ArrowUpDownIcon, HeartIcon } from 'lucide-react';
+import { XIcon, RefreshCwIcon, PlusIcon, SearchIcon, PlayIcon, PauseIcon, Trash2Icon, ArrowUpDownIcon, HeartIcon, Check } from 'lucide-react';
 import { useIsMobile } from "@/hooks/use-mobile";
 import { 
   API_URL, 
@@ -292,6 +292,27 @@ const QueuePage = () => {
     setSelectedDatacenters([]);
   };
 
+  // 按地区分组数据中心
+  const getDatacentersByRegion = () => {
+    const regions: { [key: string]: DatacenterInfo[] } = {
+      '欧洲': [],
+      '北美': [],
+      '亚太': []
+    };
+
+    OVH_DATACENTERS.forEach(dc => {
+      if (['gra', 'sbg', 'rbx', 'waw', 'fra', 'lon'].includes(dc.code)) {
+        regions['欧洲'].push(dc);
+      } else if (['bhs', 'hil', 'vin'].includes(dc.code)) {
+        regions['北美'].push(dc);
+      } else {
+        regions['亚太'].push(dc);
+      }
+    });
+
+    return regions;
+  };
+
   return (
     <div className="space-y-4 sm:space-y-6">
       <div>
@@ -379,7 +400,7 @@ const QueuePage = () => {
                   className="w-full cyber-input bg-cyber-surface text-cyber-text border-cyber-border focus:ring-cyber-primary focus:border-cyber-primary"
                   placeholder="默认: 1台"
                 />
-                <p className="text-xs text-cyber-muted mt-1">
+                <p className="text-[10px] text-cyber-muted mt-1.5 leading-relaxed">
                   💡 例如：选择3个数据中心，数量填10，将创建30个独立订单（每个数据中心10台）
                 </p>
               </div>
@@ -428,44 +449,74 @@ const QueuePage = () => {
 
             {/* Right Column: Datacenter Selection */}
             <div className="md:col-span-2">
-              <div className="flex items-center justify-between mb-2">
-                <label className="block text-sm font-medium text-cyber-secondary">选择数据中心 (可选)</label>
+              <div className="flex items-center justify-between mb-4">
+                <label className="block text-sm font-medium text-cyber-secondary">① 选择部署位置:</label>
                 <div className="flex gap-2">
                   <button
                     type="button"
                     onClick={selectAllDatacenters}
-                    className="px-2 py-1 text-xs bg-cyber-accent/10 hover:bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/30 hover:border-cyber-accent/50 rounded transition-all"
+                    className="px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white border border-blue-500 rounded transition-all"
                   >
                     全选
                   </button>
                   <button
                     type="button"
                     onClick={deselectAllDatacenters}
-                    className="px-2 py-1 text-xs bg-cyber-grid/10 hover:bg-cyber-grid/20 text-cyber-muted hover:text-cyber-text border border-cyber-accent/20 hover:border-cyber-accent/40 rounded transition-all"
+                    className="px-3 py-1.5 text-xs font-medium bg-transparent hover:bg-cyber-hover text-cyber-text border border-blue-500/50 hover:border-blue-500 rounded transition-all"
                   >
                     取消全选
                   </button>
                 </div>
               </div>
-              <div className="h-48 p-3 bg-cyber-surface border border-cyber-border rounded-md overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2 custom-scrollbar">
-                {OVH_DATACENTERS.sort((a, b) => a.name.localeCompare(b.name)).map(dc => (
-                  <div key={dc.code} className="flex items-center">
-                    <input
-                      type="checkbox"
-                      id={`dc-${dc.code}`}
-                      checked={selectedDatacenters.includes(dc.code)}
-                      onChange={() => handleDatacenterChange(dc.code)}
-                      className="cyber-checkbox h-4 w-4 text-cyber-primary bg-cyber-surface border-cyber-border focus:ring-cyber-primary"
-                    />
-                    <label htmlFor={`dc-${dc.code}`} className="ml-2 text-sm text-cyber-text-dimmed truncate" title={`${dc.name} (${dc.code})`}>
-                      {dc.name} ({dc.code})
-                    </label>
-                  </div>
-                ))}
+              <div className="space-y-3">
+                {Object.entries(getDatacentersByRegion()).map(([region, datacenters]) => {
+                  if (datacenters.length === 0) return null;
+                  return (
+                    <div key={region}>
+                      <h3 className="text-xs font-semibold text-cyber-secondary mb-2">{region}</h3>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
+                        {datacenters.map(dc => {
+                          const isSelected = selectedDatacenters.includes(dc.code);
+                          return (
+                            <div
+                              key={dc.code}
+                              onClick={() => handleDatacenterChange(dc.code)}
+                              className={`relative px-2.5 py-2 rounded border cursor-pointer transition-all ${
+                                isSelected
+                                  ? 'bg-cyber-accent/10 border-cyber-accent/50 hover:bg-cyber-accent/15'
+                                  : 'bg-cyber-surface border-cyber-border hover:bg-cyber-hover hover:border-cyber-accent/30'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-xs font-semibold text-cyber-text mb-0.5">
+                                    {dc.code.toUpperCase()}
+                                  </div>
+                                  <div className="text-[10px] text-cyber-text-dimmed leading-tight">
+                                    {dc.region} - {dc.name}
+                                  </div>
+                                </div>
+                                <div className="ml-2 flex-shrink-0">
+                                  {isSelected ? (
+                                    <div className="w-4 h-4 rounded-full bg-green-500 flex items-center justify-center">
+                                      <Check size={10} className="text-white" />
+                                    </div>
+                                  ) : (
+                                    <div className="w-4 h-4 rounded-full bg-yellow-500"></div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
               
               {/* 可选配置 - 用户自定义输入 */}
-              <div className="mt-4">
+              <div className="mt-3">
                 <div className="text-xs font-medium text-cyber-secondary mb-2">
                   ⚙️ 可选配置（自定义）
                   <span className="text-[10px] text-cyber-muted ml-2">
@@ -495,14 +546,14 @@ const QueuePage = () => {
                     获取准确参数。
                   </p>
                 </div>
-                <p className="text-[10px] text-cyber-muted mt-1">
+                <p className="text-[10px] text-cyber-muted mt-1.5 leading-relaxed">
                   💡 示例：ram-64g-ecc-2400, softraid-2x450nvme-24sk50
                 </p>
                 
                 {/* 已选配置显示 */}
                 {selectedOptions.length > 0 && (
-                  <div className="mt-2 p-1.5 bg-cyber-accent/10 border border-cyber-accent/30 rounded">
-                    <div className="flex items-center justify-between mb-1">
+                  <div className="mt-2 p-2 bg-cyber-accent/10 border border-cyber-accent/30 rounded">
+                    <div className="flex items-center justify-between mb-1.5">
                       <div className="text-[10px] font-medium text-cyber-accent">已选配置 ({selectedOptions.length})</div>
                       <button
                         type="button"
@@ -510,21 +561,21 @@ const QueuePage = () => {
                           setSelectedOptions([]);
                           setOptionsInput('');
                         }}
-                        className="text-[10px] text-cyber-muted hover:text-cyber-accent"
+                        className="text-[10px] text-cyber-muted hover:text-cyber-accent transition-colors"
                       >
                         清除
                       </button>
                     </div>
-                    <div className="flex flex-wrap gap-1">
+                    <div className="flex flex-wrap gap-1.5">
                       {selectedOptions.map((optValue, index) => (
-                        <div key={index} className="flex items-center gap-1 px-1.5 py-0.5 bg-cyber-accent/20 rounded text-[10px]">
-                          <span className="font-mono">{optValue}</span>
+                        <div key={index} className="flex items-center gap-1 px-2 py-1 bg-cyber-accent/20 border border-cyber-accent/30 rounded text-[10px]">
+                          <span className="font-mono text-cyber-text">{optValue}</span>
                           <button
                             onClick={() => {
                               const newOptions = selectedOptions.filter((_, i) => i !== index);
                               setSelectedOptions(newOptions);
                             }}
-                            className="text-cyber-muted hover:text-cyber-accent"
+                            className="text-cyber-muted hover:text-cyber-accent transition-colors ml-0.5"
                           >
                             <XIcon size={10} />
                           </button>
