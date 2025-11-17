@@ -495,38 +495,86 @@ def check_server_availability_with_configs(plan_code):
                 if dc_name:
                     datacenters[dc_name] = availability
             
-            # 尝试查找匹配的API2选项代码（用于价格查询）
+            # 尝试查找匹配的API2选项代码（用于价格查询和下单）
             api2_options = []
             try:
                 # 使用standardize_config查找匹配的选项
                 memory_std = standardize_config(memory) if memory != "N/A" else None
                 storage_std = standardize_config(storage) if storage != "N/A" else None
                 
+                add_log("DEBUG", f"[配置监控] 提取选项: memory={memory} (标准化: {memory_std}), storage={storage} (标准化: {storage_std})", "monitor")
+                
                 if memory_std or storage_std:
                     # 查找catalog中匹配的选项
                     catalog = client.get(f'/order/catalog/public/eco?ovhSubsidiary={config["zone"]}')
+                    plan_found = False
                     for plan in catalog.get("plans", []):
                         if plan.get("planCode") == plan_code:
+                            plan_found = True
                             addon_families = plan.get("addonFamilies", [])
+                            
+                            # 记录所有可用的 addon 用于诊断
+                            all_memory_addons = []
+                            all_storage_addons = []
                             
                             for family in addon_families:
                                 family_name = family.get("name", "").lower()
                                 addons = family.get("addons", [])
                                 
                                 if family_name == "memory" and memory_std:
+                                    all_memory_addons = [addon for addon in addons]
+                                    add_log("DEBUG", f"[配置监控] 找到 {len(all_memory_addons)} 个内存选项: {all_memory_addons[:5]}...", "monitor")
+                                    
                                     for addon in addons:
-                                        if standardize_config(addon) == memory_std:
+                                        addon_std = standardize_config(addon)
+                                        if addon_std == memory_std:
                                             if addon not in api2_options:
                                                 api2_options.append(addon)
+                                                add_log("DEBUG", f"[配置监控] ✓ 精确匹配到内存选项: {addon} (标准化: {addon_std})", "monitor")
+                                        
+                                        # 如果精确匹配失败，尝试部分匹配（包含关键部分）
+                                        elif memory_std and memory_std in addon_std:
+                                            if addon not in api2_options:
+                                                api2_options.append(addon)
+                                                add_log("DEBUG", f"[配置监控] ✓ 部分匹配到内存选项: {addon} (标准化: {addon_std}, 目标: {memory_std})", "monitor")
                                 
                                 elif family_name == "storage" and storage_std:
+                                    all_storage_addons = [addon for addon in addons]
+                                    add_log("DEBUG", f"[配置监控] 找到 {len(all_storage_addons)} 个存储选项: {all_storage_addons[:5]}...", "monitor")
+                                    
                                     for addon in addons:
-                                        if standardize_config(addon) == storage_std:
+                                        addon_std = standardize_config(addon)
+                                        if addon_std == storage_std:
                                             if addon not in api2_options:
                                                 api2_options.append(addon)
+                                                add_log("DEBUG", f"[配置监控] ✓ 精确匹配到存储选项: {addon} (标准化: {addon_std})", "monitor")
+                                        
+                                        # 如果精确匹配失败，尝试部分匹配（包含关键部分）
+                                        elif storage_std and storage_std in addon_std:
+                                            if addon not in api2_options:
+                                                api2_options.append(addon)
+                                                add_log("DEBUG", f"[配置监控] ✓ 部分匹配到存储选项: {addon} (标准化: {addon_std}, 目标: {storage_std})", "monitor")
+                            
+                            # 如果仍然没有匹配到，记录详细信息用于诊断
+                            if not api2_options:
+                                add_log("WARNING", f"[配置监控] ⚠️ 未能匹配到任何选项", "monitor")
+                                if memory_std:
+                                    add_log("WARNING", f"[配置监控] 内存匹配失败: 目标={memory_std}, 可用选项={all_memory_addons[:10]}", "monitor")
+                                if storage_std:
+                                    add_log("WARNING", f"[配置监控] 存储匹配失败: 目标={storage_std}, 可用选项={all_storage_addons[:10]}", "monitor")
+                            
                             break  # 找到匹配的plan后退出
+                    
+                    if not plan_found:
+                        add_log("WARNING", f"[配置监控] 在 catalog 中未找到 planCode: {plan_code}", "monitor")
+                
+                if api2_options:
+                    add_log("INFO", f"[配置监控] 成功提取 {len(api2_options)} 个API2选项: {api2_options}", "monitor")
+                else:
+                    add_log("WARNING", f"[配置监控] 未能提取API2选项，memory={memory} (标准化: {memory_std}), storage={storage} (标准化: {storage_std})", "monitor")
             except Exception as e:
                 add_log("WARNING", f"[配置监控] 查找API2选项代码失败: {str(e)}", "monitor")
+                add_log("DEBUG", f"[配置监控] 错误详情: {traceback.format_exc()}", "monitor")
             
             result[config_key] = {
                 "memory": memory,
@@ -3034,7 +3082,17 @@ def process_telegram_order(plan_code, datacenter=None, quantity=1, options=None)
         orders_to_create = []
         for config_key, config_data in configs_to_order:
             config_options = config_data.get("options", [])
+            # 确保 options 是列表的副本，避免引用共享问题
+            config_options = list(config_options) if config_options else []
             dc_map = config_data.get("datacenters", {})
+            memory = config_data.get("memory", "N/A")
+            storage = config_data.get("storage", "N/A")
+            
+            add_log("INFO", f"[Telegram下单] 处理配置: memory={memory}, storage={storage}, options={config_options} (数量: {len(config_options)}), 数据中心数={len([dc for dc in datacenters_to_order if dc_map.get(dc) not in ['unavailable', 'unknown']])}", "telegram")
+            
+            # 如果配置选项为空，记录警告
+            if not config_options:
+                add_log("WARNING", f"[Telegram下单] ⚠️ 配置选项为空！memory={memory}, storage={storage}, config_key={config_key}", "telegram")
             
             for dc in datacenters_to_order:
                 # 检查该配置在该机房是否有货
@@ -3043,11 +3101,12 @@ def process_telegram_order(plan_code, datacenter=None, quantity=1, options=None)
                 
                 # 为每个数据中心创建 quantity 个订单
                 for i in range(quantity):
+                    # 为每个订单项创建独立的 options 列表副本
                     queue_item = {
                         "id": str(uuid.uuid4()),
                         "planCode": plan_code,
                         "datacenter": dc,
-                        "options": config_options,
+                        "options": list(config_options),  # 创建列表副本，确保每个订单项都有独立的 options
                         "status": "running",
                         "createdAt": datetime.now().isoformat(),
                         "updatedAt": datetime.now().isoformat(),
@@ -3057,6 +3116,7 @@ def process_telegram_order(plan_code, datacenter=None, quantity=1, options=None)
                         "fromTelegram": True  # 标记来自Telegram
                     }
                     orders_to_create.append(queue_item)
+                    add_log("DEBUG", f"[Telegram下单] 创建订单项: planCode={plan_code}, datacenter={dc}, options={queue_item['options']} (ID: {queue_item['id'][:8]})", "telegram")
         
         # 并发处理订单创建（每批10单）
         BATCH_SIZE = 10
