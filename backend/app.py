@@ -5,7 +5,8 @@ import logging
 import uuid
 import threading
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+import urllib.parse
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import ovh
@@ -5091,6 +5092,278 @@ def get_my_servers():
         
     except Exception as e:
         add_log("ERROR", f"获取服务器列表失败: {str(e)}", "server_control")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/server-control/order-mapping', methods=['OPTIONS', 'GET'])
+def get_order_mapping():
+    """
+    获取订单与服务器的映射关系
+    通过调用 OVH API 的 /me/order 和 /me/order/{orderId}/status 以及 /me/order/{orderId}/details/{orderDetailId} 来建立映射
+    """
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    
+    client = get_ovh_client()
+    if not client:
+        return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
+    
+    force_refresh = request.args.get('forceRefresh', 'false').lower() == 'true'
+    
+    # 简单的内存缓存（10分钟）
+    cache_key = 'order_mapping_cache'
+    cache_time_key = 'order_mapping_cache_time'
+    cache_duration = 600  # 10分钟
+    
+    if not force_refresh and hasattr(get_order_mapping, cache_key):
+        cache_time = getattr(get_order_mapping, cache_time_key, 0)
+        if time.time() - cache_time < cache_duration:
+            cached_data = getattr(get_order_mapping, cache_key)
+            add_log("INFO", f"返回缓存的订单映射数据（共 {len(cached_data)} 条）", "server_control")
+            return jsonify({
+                "success": True,
+                "mapping": cached_data,
+                "cached": True,
+                "cacheTime": datetime.now(timezone.utc).isoformat()
+            })
+    
+    try:
+        add_log("INFO", "开始同步订单映射数据...", "server_control")
+        
+        # 获取所有服务器的创建时间，用于缩小订单查询范围
+        creation_dates = []
+        try:
+            server_list_response = client.get('/dedicated/server')
+            for server_name in server_list_response:
+                service_info = client.get(f'/dedicated/server/{server_name}/serviceInfos')
+                if service_info and service_info.get('creation'):
+                    creation_dates.append(service_info['creation'])
+        except Exception as e:
+            add_log("WARNING", f"获取服务器创建时间失败: {str(e)}, 将获取最近30天的订单", "server_control")
+        
+        date_from = None
+        date_to = None
+        
+        try:
+            parsed_dates = []
+            for date_str in creation_dates:
+                try:
+                    # OVH 日期格式通常是 ISO 8601
+                    if 'T' in date_str:
+                        parsed_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                    else:
+                        # 如果没有时间部分，只解析日期
+                        parsed_date = datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+                    parsed_dates.append(parsed_date)
+                except Exception as parse_err:
+                    add_log("DEBUG", f"解析日期失败: {date_str}, 错误: {parse_err}", "server_control")
+                    continue
+            
+            if parsed_dates:
+                earliest = min(parsed_dates)
+                latest = max(parsed_dates)
+                # 前后各15天
+                date_from = earliest - timedelta(days=15)
+                date_to = latest + timedelta(days=15)
+                add_log("INFO", f"服务器创建时间范围: {earliest.date()} 到 {latest.date()}, 订单查询范围: {date_from.date()} 到 {date_to.date()}", "server_control")
+            else:
+                date_to = datetime.now(timezone.utc)
+                date_from = date_to - timedelta(days=30)
+        except Exception as e:
+            add_log("WARNING", f"解析服务器创建时间失败: {str(e)}, 将获取最近30天的订单", "server_control")
+            date_to = datetime.now(timezone.utc)
+            date_from = date_to - timedelta(days=30)
+        
+        # 2. 获取指定时间范围内的订单列表
+        try:
+            # 格式化日期为 ISO 8601 格式（OVH API 要求：YYYY-MM-DDTHH:MM:SS+00:00）
+            if date_from.tzinfo is None:
+                date_from = date_from.replace(tzinfo=timezone.utc)
+            if date_to.tzinfo is None:
+                date_to = date_to.replace(tzinfo=timezone.utc)
+            
+            # 使用 strftime 直接生成标准 ISO 8601 格式
+            date_from_str = date_from.strftime('%Y-%m-%dT%H:%M:%S+00:00')
+            date_to_str = date_to.strftime('%Y-%m-%dT%H:%M:%S+00:00')
+            
+            # 对日期字符串进行 URL 编码
+            date_from_encoded = urllib.parse.quote(date_from_str)
+            date_to_encoded = urllib.parse.quote(date_to_str)
+            
+            add_log("DEBUG", f"日期范围查询: from={date_from_str}, to={date_to_str}", "server_control")
+            
+            # 先获取所有订单（带时间过滤）
+            all_order_ids = client.get(f'/me/order?date.from={date_from_encoded}&date.to={date_to_encoded}')
+            add_log("INFO", f"时间范围内获取到 {len(all_order_ids)} 个订单", "server_control")
+            
+            # 过滤出已支付的订单（使用 /me/order/{orderId}/status 端点）
+            order_ids = []
+            skipped_count = 0
+            status_counts = {}  # 统计各种状态的数量
+            
+            # 使用 ThreadPoolExecutor 并发获取订单状态
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_order_id = {executor.submit(client.get, f'/me/order/{order_id}/status'): order_id for order_id in all_order_ids}
+                for future in as_completed(future_to_order_id):
+                    order_id = future_to_order_id[future]
+                    try:
+                        order_status = future.result()  # 返回的是字符串，如 "cancelled", "delivered" 等
+                        status_lower = order_status.lower() if isinstance(order_status, str) else str(order_status).lower()
+                        
+                        # 统计状态
+                        status_counts[order_status] = status_counts.get(order_status, 0) + 1
+                        
+                        # 只处理非取消状态的订单
+                        if status_lower not in ['cancelled', 'cancelledbycustomer', 'cancelledbycustomerrequest']:
+                            order_ids.append(order_id)
+                        else:
+                            skipped_count += 1
+                    except Exception as order_err:
+                        add_log("WARNING", f"获取订单 {order_id} 状态失败: {str(order_err)}", "server_control")
+                        skipped_count += 1
+                        continue
+            
+            # 输出状态统计信息
+            if status_counts:
+                status_info = ', '.join([f"{status}: {count}" for status, count in status_counts.items()])
+                add_log("INFO", f"订单状态统计: {status_info}", "server_control")
+            
+            add_log("INFO", f"过滤后得到 {len(order_ids)} 个有效订单（跳过 {skipped_count} 个已取消订单）", "server_control")
+        except Exception as e:
+            add_log("ERROR", f"获取订单列表失败: {str(e)}", "server_control")
+            return jsonify({"success": False, "error": f"获取订单列表失败: {str(e)}"}), 500
+        
+        # 3. 对每个订单获取详情，提取 serviceName
+        order_mapping = {}  # serviceName -> order info
+        processed_count = 0
+        error_count = 0
+        
+        # 使用 ThreadPoolExecutor 并发获取订单详情
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            # 先获取所有订单的详情ID列表
+            future_to_order_details = {executor.submit(client.get, f'/me/order/{order_id}/details'): order_id for order_id in order_ids}
+            
+            for future in as_completed(future_to_order_details):
+                order_id = future_to_order_details[future]
+                try:
+                    order_detail_ids = future.result()  # 返回的是 detail ID 列表
+                    if not isinstance(order_detail_ids, list):
+                        add_log("WARNING", f"订单 {order_id} 返回的详情格式异常，跳过", "server_control")
+                        error_count += 1
+                        continue
+                    
+                    # 获取订单基本信息
+                    order_info = client.get(f'/me/order/{order_id}')
+                    order_date = order_info.get('date', '')
+                    order_url = f"https://www.ovh.com/manager/dedicated/#/billing/order?orderId={order_id}"
+                    
+                    # 获取订单状态
+                    try:
+                        order_status = client.get(f'/me/order/{order_id}/status')
+                    except:
+                        order_status = 'unknown'
+                    
+                    # 遍历订单详情 ID，逐个获取完整信息
+                    detail_futures = {executor.submit(client.get, f'/me/order/{order_id}/details/{detail_id}'): detail_id for detail_id in order_detail_ids}
+                    for detail_future in as_completed(detail_futures):
+                        detail_id = detail_futures[detail_future]
+                        try:
+                            detail_data = detail_future.result()
+                            if not isinstance(detail_data, dict):
+                                continue
+                            
+                            # 从 domain 字段获取服务器名称
+                            service_name = detail_data.get('domain')
+                            description = detail_data.get('description', '')
+                            
+                            # 调试：输出所有订单详情的 domain 和 description
+                            if service_name:
+                                add_log("DEBUG", f"订单 {order_id} 详情 {detail_id}: domain={service_name}, description={description[:80]}", "server_control")
+                            
+                            if not service_name:
+                                # 某些条目可能没有 serviceName（例如纯费用），忽略
+                                continue
+                            
+                            # 检查是否是 dedicated server（通过domain格式或description判断）
+                            # domain 格式通常是 nsXXXXX.ip-XXX-XXX-XXX.eu 或类似格式
+                            is_dedicated_server = (
+                                'dedicated' in description.lower() or 
+                                'server' in description.lower() or
+                                (service_name and ('.ip-' in service_name or service_name.startswith('ns')))
+                            )
+                            
+                            if is_dedicated_server:
+                                # 如果该服务器还没有映射，或者当前订单更新（选择最新的订单）
+                                if service_name not in order_mapping:
+                                    order_mapping[service_name] = {
+                                        'orderId': order_id,
+                                        'orderDate': order_date,
+                                        'orderStatus': order_status,
+                                        'orderUrl': order_url,
+                                        'detailId': detail_id,
+                                        'price': detail_data.get('totalPrice', {}),
+                                        'description': description
+                                    }
+                                    processed_count += 1
+                                    add_log("INFO", f"✅ 找到服务器映射: {service_name} -> 订单 {order_id}", "server_control")
+                                else:
+                                    # 如果已有映射，比较订单日期，保留最新的
+                                    existing_date = order_mapping[service_name].get('orderDate', '')
+                                    if order_date > existing_date:
+                                        order_mapping[service_name] = {
+                                            'orderId': order_id,
+                                            'orderDate': order_date,
+                                            'orderStatus': order_status,
+                                            'orderUrl': order_url,
+                                            'detailId': detail_id,
+                                            'price': detail_data.get('totalPrice', {}),
+                                            'description': description
+                                        }
+                                        add_log("INFO", f"🔄 更新服务器映射: {service_name} -> 订单 {order_id} (更新)", "server_control")
+                        except Exception as detail_err:
+                            add_log("WARNING", f"获取订单 {order_id} 的条目 {detail_id} 详情失败: {detail_err}", "server_control")
+                            continue
+                        
+                except Exception as e:
+                    error_count += 1
+                    add_log("WARNING", f"处理订单 {order_id} 时出错: {str(e)}", "server_control")
+                    continue
+        
+        # 4. 缓存结果
+        setattr(get_order_mapping, cache_key, order_mapping)
+        setattr(get_order_mapping, cache_time_key, time.time())
+        
+        add_log("INFO", f"订单映射同步完成: 成功处理 {processed_count} 个服务器映射，{error_count} 个订单处理失败", "server_control")
+        
+        # 输出所有服务器的 serviceName 用于对比
+        try:
+            server_list_response = client.get('/dedicated/server')
+            add_log("INFO", f"当前所有服务器 serviceName: {server_list_response}", "server_control")
+        except:
+            pass
+        
+        # 输出映射结果用于调试
+        if order_mapping:
+            sample_keys = list(order_mapping.keys())[:5]
+            add_log("INFO", f"订单映射示例（前5个）: {sample_keys}", "server_control")
+            # 输出所有映射的服务器名称和订单ID
+            for service_name, order_info in order_mapping.items():
+                add_log("INFO", f"  映射: {service_name} -> 订单 {order_info.get('orderId')}", "server_control")
+        else:
+            add_log("WARNING", "⚠️ 订单映射为空，可能没有找到匹配的服务器", "server_control")
+        
+        add_log("INFO", f"返回订单映射数据: 共 {len(order_mapping)} 个映射", "server_control")
+        
+        return jsonify({
+            "success": True,
+            "mapping": order_mapping,
+            "total": len(order_mapping),
+            "processedOrders": len(order_ids),
+            "cached": False,
+            "syncTime": datetime.now(timezone.utc).isoformat()
+        })
+        
+    except Exception as e:
+        add_log("ERROR", f"同步订单映射失败: {str(e)}", "server_control")
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/server-control/<service_name>/reboot', methods=['OPTIONS', 'POST'])

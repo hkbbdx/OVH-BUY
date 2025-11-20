@@ -15,6 +15,7 @@ interface ServerInfo {
   state: string;
   ip: string;
   os: string;
+  orderId?: string | number;
 }
 
 interface OSTemplate {
@@ -403,6 +404,10 @@ const ServerControlPage: React.FC = () => {
   // IP Specs
   const [ipSpecs, setIpSpecs] = useState<any>(null);
   const [loadingIpSpecs, setLoadingIpSpecs] = useState(false);
+  
+  // 订单映射
+  const [orderMapping, setOrderMapping] = useState<Record<string, { orderId: string | number }>>({});
+  const [loadingOrderMapping, setLoadingOrderMapping] = useState(false);
 
   // 加载 BIOS 设置
   const fetchBiosSettings = async () => {
@@ -433,6 +438,32 @@ const ServerControlPage: React.FC = () => {
       }
     } finally {
       setLoadingBios(false);
+    }
+  };
+
+  // 获取订单映射
+  const fetchOrderMapping = async (forceRefresh = false) => {
+    setLoadingOrderMapping(true);
+    try {
+      const response = await api.get(`/server-control/order-mapping?forceRefresh=${forceRefresh}`);
+      if (response.data.success) {
+        const mapping = response.data.mapping || {};
+        setOrderMapping(mapping);
+        console.log('✅ 订单映射数据:', mapping);
+        console.log('✅ 映射数量:', Object.keys(mapping).length);
+        console.log('✅ 映射的服务器列表:', Object.keys(mapping));
+        // 检查当前选中的服务器是否有映射
+        if (selectedServer) {
+          const hasMapping = mapping[selectedServer.serviceName];
+          console.log(`✅ 服务器 ${selectedServer.serviceName} 的映射:`, hasMapping);
+        }
+      } else {
+        console.error('❌ 获取订单映射失败:', response.data.error);
+      }
+    } catch (error: any) {
+      console.error('❌ 获取订单映射失败:', error);
+    } finally {
+      setLoadingOrderMapping(false);
     }
   };
 
@@ -2063,7 +2094,12 @@ const ServerControlPage: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchServers();
+    const loadData = async () => {
+      await fetchServers();
+      // 等待服务器列表加载完成后再获取订单映射
+      await fetchOrderMapping();
+    };
+    loadData();
   }, []);
 
   // Task 5-8: 当选择服务器时加载数据
@@ -2193,6 +2229,20 @@ const ServerControlPage: React.FC = () => {
                   <div className="py-2">
                     <span className="text-cyber-muted">状态:</span>
                     <span className="text-green-400 ml-2 capitalize">{selectedServer.state}</span>
+                  </div>
+                  <div className="py-2">
+                    <span className="text-cyber-muted">订单号:</span>
+                    <span className="text-cyber-text ml-2 font-mono">
+                      {loadingOrderMapping ? (
+                        <span className="text-cyber-muted text-xs">加载中...</span>
+                      ) : (() => {
+                        const orderInfo = orderMapping[selectedServer.serviceName];
+                        if (orderInfo && orderInfo.orderId) {
+                          return String(orderInfo.orderId);
+                        }
+                        return '无';
+                      })()}
+                    </span>
                   </div>
                 </div>
 
