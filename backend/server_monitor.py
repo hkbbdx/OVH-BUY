@@ -219,15 +219,17 @@ class ServerMonitor:
                         # 只有价格校验通过才算真正有货
                         actual_status = status
                         price_check_failed = False  # 标记价格校验是否失败
+                        price_check_error = None  # 价格校验失败原因
                         if status != "unavailable":
                             # 可用性显示有货，但需要价格校验确认
-                            price_available = self._verify_price_available(plan_code, dc, config_info)
+                            price_available, price_check_error = self._verify_price_available(plan_code, dc, config_info)
                             if not price_available:
                                 # 价格校验失败，使用特殊状态值标记，避免与真正的无货混淆
                                 actual_status = "price_check_failed"  # 使用特殊状态值
                                 price_check_failed = True  # 标记价格校验失败
                                 config_desc = f" [{config_display}]" if config_display else ""
-                                self.add_log("INFO", f"{plan_code}@{dc}{config_desc} 可用性显示有货但价格校验失败，标记为price_check_failed（将触发通知但不自动下单）", "monitor")
+                                error_msg = f"，原因: {price_check_error}" if price_check_error else ""
+                                self.add_log("INFO", f"{plan_code}@{dc}{config_desc} 可用性显示有货但价格校验失败{error_msg}，标记为price_check_failed（将触发通知但不自动下单）", "monitor")
                             else:
                                 # 价格校验通过，真正有货
                                 actual_status = "available"
@@ -267,6 +269,7 @@ class ServerMonitor:
                                 change_type = "available"
                                 config_desc = f" [{config_display}]" if config_display else ""
                                 self.add_log("INFO", f"{plan_code}@{dc}{config_desc} 从无货变有货（价格校验通过）", "monitor")
+                                # ✅ 补货历时时间将在后续统一计算并添加到通知中
                         # 从无货变价格校验失败（可用性有货但价格校验失败）
                         elif old_status == "unavailable" and actual_status == "price_check_failed":
                             self.add_log("INFO", f"{plan_code}@{dc}{config_desc} 从无货变可用性有货但价格校验失败，发送通知", "monitor")
@@ -303,14 +306,74 @@ class ServerMonitor:
                                     change_type = "price_check_failed"
                         
                         if status_changed:
-                            notifications_to_send.append({
+                            notification_item = {
                                 "dc": dc,
                                 "status": actual_status,  # 使用实际状态（经过价格校验）
                                 "old_status": old_status,
                                 "status_key": status_key,
                                 "change_type": change_type,
-                                "price_check_failed": price_check_failed  # 标记价格校验失败
-                            })
+                                "price_check_failed": price_check_failed,  # 标记价格校验失败
+                                "price_check_error": price_check_error  # 价格校验失败原因
+                            }
+                            # ✅ 如果是"从无货变有货"，添加补货历时时间
+                            if change_type == "available" and old_status == "unavailable":
+                                # 计算补货历时时间（从上次无货到本次有货的时间）
+                                duration_text = None
+                                try:
+                                    # 查找最近一次无货的时间
+                                    last_unavailable_ts = None
+                                    same_config_display = config_info.get("display") if config_info else None
+                                    for entry in reversed(subscription.get("history", [])):
+                                        if entry.get("datacenter") != dc:
+                                            continue
+                                        if entry.get("changeType") not in ["unavailable", "price_check_failed"]:
+                                            continue
+                                        if same_config_display:
+                                            cfg = entry.get("config", {})
+                                            if cfg.get("display") != same_config_display:
+                                                continue
+                                        last_unavailable_ts = entry.get("timestamp")
+                                        if last_unavailable_ts:
+                                            break
+                                    
+                                    if last_unavailable_ts:
+                                        # 解析ISO时间，按北京时间计算时长
+                                        from datetime import datetime as _dt
+                                        try:
+                                            start_dt = _dt.fromisoformat(last_unavailable_ts.replace("Z", "+00:00"))
+                                        except Exception:
+                                            start_dt = _dt.fromisoformat(last_unavailable_ts)
+                                        if start_dt.tzinfo is None:
+                                            try:
+                                                from zoneinfo import ZoneInfo
+                                                start_dt = start_dt.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+                                            except Exception:
+                                                pass
+                                        delta = self._now_beijing() - start_dt
+                                        total_sec = int(delta.total_seconds())
+                                        if total_sec < 0:
+                                            total_sec = 0
+                                        days = total_sec // 86400
+                                        rem = total_sec % 86400
+                                        hours = rem // 3600
+                                        minutes = (rem % 3600) // 60
+                                        seconds = rem % 60
+                                        if days > 0:
+                                            duration_text = f"历时 {days}天{hours}小时{minutes}分{seconds}秒"
+                                        elif hours > 0:
+                                            duration_text = f"历时 {hours}小时{minutes}分{seconds}秒"
+                                        elif minutes > 0:
+                                            duration_text = f"历时 {minutes}分{seconds}秒"
+                                        else:
+                                            duration_text = f"历时 {seconds}秒"
+                                except Exception as e:
+                                    self.add_log("DEBUG", f"计算补货历时异常: {str(e)}", "monitor")
+                                    duration_text = None
+                                
+                                if duration_text:
+                                    notification_item["duration_text"] = duration_text
+                            
+                            notifications_to_send.append(notification_item)
                         
                         # 更新状态记录（使用实际状态，包括特殊状态值 "price_check_failed"）
                         last_status[status_key] = actual_status
@@ -459,8 +522,13 @@ class ServerMonitor:
                         if config_info_with_price:
                             config_info_with_price["cached_price"] = price_text  # 传递查询到的价格
                         
-                        # 汇总所有有货的机房数据
-                        available_dcs = [{"dc": n["dc"], "status": n["status"]} for n in available_notifications]
+                        # 汇总所有有货的机房数据（包含补货历时时间）
+                        available_dcs = []
+                        for n in available_notifications:
+                            dc_info = {"dc": n["dc"], "status": n["status"]}
+                            if "duration_text" in n:
+                                dc_info["duration_text"] = n["duration_text"]
+                            available_dcs.append(dc_info)
                         self.send_availability_alert_grouped(
                             plan_code, available_dcs, config_info_with_price, server_name
                         )
@@ -489,15 +557,29 @@ class ServerMonitor:
                         self.add_log("INFO", f"准备发送价格校验失败提醒: {plan_code}@{notif['dc']}{config_desc} - 可用性有货但价格校验失败", "monitor")
                         server_name = subscription.get("serverName")
                         
+                        # 尝试获取价格信息（即使价格校验失败，也可能有价格数据）
+                        price_text_failed = None
+                        try:
+                            price_text_failed = self._get_price_info(plan_code, notif["dc"], config_info)
+                        except Exception as e:
+                            self.add_log("DEBUG", f"价格校验失败通知中尝试获取价格信息失败: {str(e)}", "monitor")
+                        
+                        # 创建包含价格信息的配置信息副本
+                        config_info_with_price_failed = config_info.copy() if config_info else None
+                        if config_info_with_price_failed and price_text_failed:
+                            config_info_with_price_failed["cached_price"] = price_text_failed
+                            config_info_with_price_failed["price_check_error"] = notif.get("price_check_error")
+                        
                         # 发送特殊通知，说明可用性有货但价格校验失败
                         self.send_availability_alert(
                             plan_code, 
                             notif["dc"], 
                             "unavailable",  # 状态标记为无货（因为实际不可下单）
                             "price_check_failed",  # 特殊类型：价格校验失败
-                            config_info, 
+                            config_info_with_price_failed if config_info_with_price_failed else config_info, 
                             server_name,
-                            duration_text=None
+                            duration_text=None,
+                            price_check_error=notif.get("price_check_error")
                         )
                         
                         # 添加到历史记录
@@ -837,7 +919,12 @@ class ServerMonitor:
                     "hil": "🇺🇸 美国·俄勒冈"
                 }
                 dc_display = dc_display_map.get(dc.lower(), dc.upper())
-                message += f"  • {dc_display} ({dc.upper()})\n"
+                message += f"  • {dc_display} ({dc.upper()})"
+                # ✅ 如果有补货历时时间，添加到机房信息中
+                if "duration_text" in dc_info and dc_info["duration_text"]:
+                    duration_display = dc_info["duration_text"].replace("历时 ", "⏱️ ")
+                    message += f" - {duration_display}"
+                message += "\n"
             
             message += f"\n⏰ 时间: {self._now_beijing().strftime('%Y-%m-%d %H:%M:%S')}"
             message += f"\n\n💡 点击下方按钮可直接下单对应机房！"
@@ -938,7 +1025,7 @@ class ServerMonitor:
             import traceback
             self.add_log("ERROR", f"错误详情: {traceback.format_exc()}", "monitor")
     
-    def send_availability_alert(self, plan_code, datacenter, status, change_type, config_info=None, server_name=None, duration_text=None):
+    def send_availability_alert(self, plan_code, datacenter, status, change_type, config_info=None, server_name=None, duration_text=None, price_check_error=None):
         """
         发送可用性变化提醒
         
@@ -1036,11 +1123,15 @@ class ServerMonitor:
                 if price_text:
                     message += f"\n💰 价格: {price_text}\n"
                 
-                message += (
-                    f"状态: {status}\n"
-                    f"时间: {self._now_beijing().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                    f"💡 快去抢购吧！"
-                )
+                message += f"状态: {status}\n"
+                message += f"时间: {self._now_beijing().strftime('%Y-%m-%d %H:%M:%S')}"
+                
+                # ✅ 如果有补货历时时间，添加到消息中
+                if duration_text:
+                    duration_display = duration_text.replace("历时 ", "⏱️ 历时: ")
+                    message += f"\n{duration_display}"
+                
+                message += f"\n\n💡 快去抢购吧！"
             elif change_type == "price_check_failed":
                 # 价格校验失败通知：可用性有货但价格校验失败
                 message = f"📦 服务器可用性通知\n\n"
@@ -1060,12 +1151,20 @@ class ServerMonitor:
                         f"└─ 存储: {config_info['storage']}\n"
                     )
                 
-                message += (
-                    f"\n状态: 可用性显示有货\n"
-                    f"时间: {self._now_beijing().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                    f"⚠️ 特别说明：\n"
-                    f"（价格校验未通过，已跳过自动下单）"
-                )
+                # 如果有价格信息，显示价格（即使价格校验失败）
+                price_text = None
+                if config_info and "cached_price" in config_info:
+                    price_text = config_info.get("cached_price")
+                    if price_text:
+                        message += f"\n💰 价格: {price_text}\n"
+                
+                message += f"\n状态: 可用性显示有货\n"
+                message += f"时间: {self._now_beijing().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                message += f"⚠️ 特别说明：\n"
+                if price_check_error:
+                    message += f"（价格校验未通过: {price_check_error}，已跳过自动下单）"
+                else:
+                    message += f"（价格校验未通过，已跳过自动下单）"
             else:
                 # 基础消息
                 message = f"📦 服务器下架通知\n\n"
@@ -1117,7 +1216,7 @@ class ServerMonitor:
             config_info: 配置信息 {"memory": "xxx", "storage": "xxx", "display": "xxx", "options": [...]}
         
         Returns:
-            bool: True表示价格可用（可下单），False表示价格不可用
+            tuple: (bool, str) - (True表示价格可用（可下单），False表示价格不可用, 失败原因)
         """
         try:
             # 提取配置选项
@@ -1140,45 +1239,55 @@ class ServerMonitor:
             }
             
             try:
-                response = requests.post(api_url, json=payload, timeout=10)  # 价格校验使用较短超时
+                response = requests.post(api_url, json=payload, timeout=20)  # 价格校验超时设置为20秒
                 response.raise_for_status()
                 result = response.json()
+            except requests.exceptions.Timeout:
+                error_msg = "价格校验API请求超时（20秒）"
+                self.add_log("DEBUG", f"价格校验API请求超时: {plan_code}@{datacenter}", "monitor")
+                return False, error_msg
             except requests.exceptions.RequestException as e:
+                error_msg = f"价格校验API请求失败: {str(e)}"
                 self.add_log("DEBUG", f"价格校验API请求失败: {plan_code}@{datacenter} - {str(e)}", "monitor")
-                return False
+                return False, error_msg
             
             # 检查价格是否有效（与quick-order中的逻辑一致）
             if not result.get("success"):
                 error_msg = result.get("error", "未知错误")
                 self.add_log("DEBUG", f"价格校验失败: {plan_code}@{datacenter} - {error_msg}", "monitor")
-                return False
+                return False, error_msg
             
             if "price" not in result:
+                error_msg = "price字段缺失"
                 self.add_log("DEBUG", f"价格校验失败: {plan_code}@{datacenter} - price字段缺失", "monitor")
-                return False
+                return False, error_msg
             
             price_info = result.get("price")
             if not isinstance(price_info, dict):
+                error_msg = "price字段类型错误"
                 self.add_log("DEBUG", f"价格校验失败: {plan_code}@{datacenter} - price字段类型错误", "monitor")
-                return False
+                return False, error_msg
             
             prices = price_info.get("prices", {})
             if not isinstance(prices, dict):
+                error_msg = "prices字段缺失或类型错误"
                 self.add_log("DEBUG", f"价格校验失败: {plan_code}@{datacenter} - prices字段缺失或类型错误", "monitor")
-                return False
+                return False, error_msg
             
             with_tax = prices.get("withTax")
             if with_tax in [None, 0, 0.0]:
+                error_msg = f"withTax无效({with_tax})"
                 self.add_log("DEBUG", f"价格校验失败: {plan_code}@{datacenter} - withTax无效({with_tax})", "monitor")
-                return False
+                return False, error_msg
             
             # 价格校验通过
             self.add_log("DEBUG", f"价格校验通过: {plan_code}@{datacenter} - 含税价格: {with_tax}", "monitor")
-            return True
+            return True, None
                 
         except Exception as e:
+            error_msg = f"价格校验过程异常: {str(e)}"
             self.add_log("WARNING", f"价格校验过程异常: {plan_code}@{datacenter} - {str(e)}", "monitor")
-            return False
+            return False, error_msg
     
     def _get_price_info(self, plan_code, datacenter, config_info=None):
         """

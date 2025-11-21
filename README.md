@@ -1,4 +1,6 @@
-# 🎯 OVH Phantom Sniper - OVH 服务器自动抢购系统
+# 🎯 OVH 服务器自动抢购系统
+
+> **🌟 多用户抢购版：** [https://github.com/iniwex5/OVH](https://github.com/iniwex5/OVH)
 
 一个功能强大的 OVH 服务器管理平台，支持自动抢购、监控、账户管理等一站式服务。
 
